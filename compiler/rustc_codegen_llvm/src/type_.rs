@@ -11,6 +11,7 @@ use rustc_middle::ty::layout::TyAndLayout;
 use rustc_middle::ty::{self, Ty};
 use rustc_span::bug;
 use rustc_target::callconv::{CastTarget, FnAbi};
+use smallvec::SmallVec;
 
 use crate::abi::{FnAbiLlvmExt, LlvmType};
 use crate::common;
@@ -81,10 +82,10 @@ impl<'ll, CX: Borrow<SCx<'ll>>> GenericCx<'ll, CX> {
         unsafe { llvm::LLVMGetReturnType(ty) }
     }
 
-    pub(crate) fn func_params_types(&self, ty: &'ll Type) -> Vec<&'ll Type> {
+    pub(crate) fn func_params_types(&self, ty: &'ll Type) -> SmallVec<[&'ll Type; 8]> {
         unsafe {
             let n_args = llvm::LLVMCountParamTypes(ty) as usize;
-            let mut args = Vec::with_capacity(n_args);
+            let mut args = SmallVec::with_capacity(n_args);
             llvm::LLVMGetParamTypes(ty, args.as_mut_ptr());
             args.set_len(n_args);
             args

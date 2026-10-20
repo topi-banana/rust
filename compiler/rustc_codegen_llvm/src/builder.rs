@@ -460,16 +460,19 @@ impl<'a, 'll, 'tcx> BuilderMethods<'a, 'tcx> for Builder<'a, 'll, 'tcx> {
     ) -> &'ll Value {
         // If this function returns indirectly (`PassMode::Indirect`),
         // the `return_slot` should be the first argument.
-        let args = match return_slot {
-            ReturnSlot::Direct => args.to_vec(),
+        let indirect_args;
+        let args: &[&'ll Value] = match return_slot {
+            ReturnSlot::Direct => args,
             ReturnSlot::Indirect(sret_ptr) => {
-                let mut args = args.to_vec();
-                args.insert(0, sret_ptr);
-                args
+                let mut v = Vec::with_capacity(args.len() + 1);
+                v.push(sret_ptr);
+                v.extend_from_slice(args);
+                indirect_args = v;
+                &indirect_args
             }
         };
         debug!("invoke {:?} with args ({:?})", llfn, args);
-        let args = self.check_call("invoke", llty, llfn, &args);
+        let args = self.check_call("invoke", llty, llfn, args);
         let funclet_bundle = funclet.map(|funclet| funclet.bundle());
         let mut bundles: SmallVec<[_; 2]> = SmallVec::new();
         if let Some(funclet_bundle) = funclet_bundle {
@@ -1475,16 +1478,19 @@ impl<'a, 'll, 'tcx> BuilderMethods<'a, 'tcx> for Builder<'a, 'll, 'tcx> {
     ) -> &'ll Value {
         // If this function returns indirectly (`PassMode::Indirect`),
         // the `return_slot` should be the first argument.
-        let args = match return_slot {
-            ReturnSlot::Direct => args.to_vec(),
+        let indirect_args;
+        let args: &[&'ll Value] = match return_slot {
+            ReturnSlot::Direct => args,
             ReturnSlot::Indirect(sret_ptr) => {
-                let mut args = args.to_vec();
-                args.insert(0, sret_ptr);
-                args
+                let mut v = Vec::with_capacity(args.len() + 1);
+                v.push(sret_ptr);
+                v.extend_from_slice(args);
+                indirect_args = v;
+                &indirect_args
             }
         };
         debug!("call {:?} with args ({:?})", llfn, args);
-        let args = self.check_call("call", llty, llfn, &args);
+        let args = self.check_call("call", llty, llfn, args);
         let funclet_bundle = funclet.map(|funclet| funclet.bundle());
         let mut bundles: SmallVec<[_; 2]> = SmallVec::new();
         if let Some(funclet_bundle) = funclet_bundle {

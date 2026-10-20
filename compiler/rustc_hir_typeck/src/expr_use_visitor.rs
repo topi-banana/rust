@@ -12,7 +12,7 @@ use hir::def::DefKind;
 use hir::pat_util::EnumerateAndAdjustIterator as _;
 use rustc_abi::{FIRST_VARIANT, FieldIdx, VariantIdx};
 use rustc_ast::UnsafeBinderCastKind;
-use rustc_data_structures::fx::FxIndexMap;
+use rustc_data_structures::fx::{FxHashSet, FxIndexMap};
 use rustc_hir::def::{CtorOf, Res};
 use rustc_hir::def_id::LocalDefId;
 use rustc_hir::{self as hir, HirId, PatExpr, PatExprKind, PatKind};
@@ -680,12 +680,19 @@ impl<'tcx, Cx: TypeInformationCtxt<'tcx>, D: Delegate<'tcx>> ExprUseVisitor<'tcx
         // expression that will actually be used
         match self.cx.structurally_resolve_type(with_expr.span, with_place.place.ty()).kind() {
             ty::Adt(adt, args) if adt.is_struct() => {
+                // Collect the indices of the fields that are mentioned explicitly
+                // in the struct expression. Looking every field of the struct up in
+                // that list separately would be quadratic in the number of fields.
+                let mut mentioned = FxHashSet::default();
+                for f in fields {
+                    if let Some(index) = self.cx.typeck_results().opt_field_index(f.hir_id) {
+                        mentioned.insert(index);
+                    }
+                }
+
                 // Consume those fields of the with expression that are needed.
                 for (f_index, with_field) in adt.non_enum_variant().fields.iter_enumerated() {
-                    let is_mentioned = fields.iter().any(|f| {
-                        self.cx.typeck_results().opt_field_index(f.hir_id) == Some(f_index)
-                    });
-                    if !is_mentioned {
+                    if !mentioned.contains(&f_index) {
                         let field_place = self.cat_projection(
                             with_expr.hir_id,
                             with_place.clone(),

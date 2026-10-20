@@ -1142,10 +1142,9 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
         trait_def_id: DefId,
         is_ambiguously_imported: bool,
     ) {
-        let trait_args = self.fresh_args_for_item(self.span, trait_def_id);
-        let trait_ref = ty::TraitRef::new_from_args(self.tcx, trait_def_id, trait_args);
-
         if self.tcx.is_trait_alias(trait_def_id) {
+            let trait_args = self.fresh_args_for_item(self.span, trait_def_id);
+            let trait_ref = ty::TraitRef::new_from_args(self.tcx, trait_def_id, trait_args);
             // For trait aliases, recursively assume all explicitly named traits are relevant
             for (bound_trait_pred, _) in
                 traits::expand_trait_aliases(self.tcx, [(trait_ref.upcast(self.tcx), self.span)]).0
@@ -1177,7 +1176,13 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
             if self.tcx.trait_is_auto(trait_def_id) {
                 return;
             }
-            for item in self.impl_or_trait_item(trait_def_id) {
+            let items = self.impl_or_trait_item(trait_def_id);
+            if items.is_empty() {
+                return;
+            }
+            let trait_args = self.fresh_args_for_item(self.span, trait_def_id);
+            let trait_ref = ty::TraitRef::new_from_args(self.tcx, trait_def_id, trait_args);
+            for item in items {
                 // Check whether `trait_def_id` defines a method with suitable name.
                 if !self.has_applicable_self(&item) {
                     debug!("method has inapplicable self");

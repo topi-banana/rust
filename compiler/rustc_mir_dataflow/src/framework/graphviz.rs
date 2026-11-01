@@ -144,7 +144,7 @@ where
     body: &'mir Body<'tcx>,
     results: &'mir Results<'tcx, A>,
     style: OutputStyle,
-    reachable: DenseBitSet<BasicBlock>,
+    reachable: &'mir DenseBitSet<BasicBlock>,
 }
 
 impl<'mir, 'tcx, A> Formatter<'mir, 'tcx, A>

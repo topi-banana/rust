@@ -358,7 +358,9 @@ pub(super) fn remove_dead_blocks(body: &mut Body<'_>) {
         bbdata.terminator.is_some() && bbdata.is_empty_unreachable() && !bbdata.is_cleanup
     };
 
-    let reachable = traversal::reachable_as_bitset(body);
+    // Clone out of the cache: `as_mut` below invalidates it while renumbering blocks, so we must
+    // not keep a borrow of it alive across the mutation.
+    let reachable = traversal::reachable_as_bitset(body).clone();
     let empty_unreachable_blocks = body
         .basic_blocks
         .iter_enumerated()

@@ -250,10 +250,28 @@ pub fn reachable<'a, 'tcx>(
 }
 
 /// Returns a `DenseBitSet` containing all basic blocks reachable from the `START_BLOCK`.
-pub fn reachable_as_bitset(body: &Body<'_>) -> DenseBitSet<BasicBlock> {
-    let mut iter = preorder(body);
-    while let Some(_) = iter.next() {}
-    iter.visited
+///
+/// The result is cached in the `BasicBlocks` CFG cache, keyed on the CFG's identity, so
+/// repeated queries for the same body are free.
+pub fn reachable_as_bitset<'a, 'tcx>(body: &'a Body<'tcx>) -> &'a DenseBitSet<BasicBlock> {
+    body.basic_blocks.reachable()
+}
+
+/// Uncached implementation of [`reachable_as_bitset`], used to populate the CFG cache.
+pub(crate) fn reachable_as_bitset_uncached(
+    basic_blocks: &IndexSlice<BasicBlock, BasicBlockData<'_>>,
+) -> DenseBitSet<BasicBlock> {
+    let mut visited = DenseBitSet::new_empty(basic_blocks.len());
+    let mut worklist = vec![START_BLOCK];
+    while let Some(bb) = worklist.pop() {
+        if !visited.insert(bb) {
+            continue;
+        }
+        if let Some(term) = &basic_blocks[bb].terminator {
+            worklist.extend(term.successors());
+        }
+    }
+    visited
 }
 
 /// Reverse postorder traversal of a graph.

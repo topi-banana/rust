@@ -3,6 +3,7 @@ use std::sync::{Arc, OnceLock};
 use rustc_data_structures::graph;
 use rustc_data_structures::graph::dominators::{Dominators, dominators};
 use rustc_data_structures::stable_hash::{StableHash, StableHashCtxt, StableHasher};
+use rustc_index::bit_set::DenseBitSet;
 use rustc_index::{IndexSlice, IndexVec};
 use rustc_macros::{StableHash, TyDecodable, TyEncodable, TypeFoldable, TypeVisitable};
 use rustc_serialize::{Decodable, Decoder, Encodable, Encoder};
@@ -26,6 +27,7 @@ pub struct CfgCache {
     predecessors: OnceLock<Predecessors>,
     reverse_postorder: OnceLock<Vec<BasicBlock>>,
     dominators: OnceLock<Dominators<BasicBlock>>,
+    reachable: OnceLock<DenseBitSet<BasicBlock>>,
 }
 
 impl CfgCache {
@@ -57,6 +59,13 @@ impl CfgCache {
             }
             preds
         })
+    }
+
+    #[inline]
+    pub fn reachable(self: &Arc<Self>, bbs: &BasicBlocks<'_>) -> &DenseBitSet<BasicBlock> {
+        debug_assert!(Arc::ptr_eq(self, &bbs.cache));
+        self.reachable
+            .get_or_init(|| super::traversal::reachable_as_bitset_uncached(&bbs.basic_blocks))
     }
 }
 
@@ -90,6 +99,12 @@ impl<'tcx> BasicBlocks<'tcx> {
     #[inline]
     pub fn reverse_postorder(&self) -> &[BasicBlock] {
         self.cache.reverse_postorder(self)
+    }
+
+    /// Returns the set of basic blocks reachable from `START_BLOCK`.
+    #[inline]
+    pub fn reachable(&self) -> &DenseBitSet<BasicBlock> {
+        self.cache.reachable(self)
     }
 
     /// Returns mutable reference to basic blocks. Invalidates CFG cache.

@@ -113,7 +113,7 @@ struct CfgChecker<'a, 'tcx> {
     body: &'a Body<'tcx>,
     tcx: TyCtxt<'tcx>,
     unwind_edge_count: usize,
-    reachable_blocks: DenseBitSet<BasicBlock>,
+    reachable_blocks: &'a DenseBitSet<BasicBlock>,
     value_cache: FxHashSet<u128>,
     // If `false`, then the MIR must not contain `UnwindAction::Continue` or
     // `TerminatorKind::Resume`.

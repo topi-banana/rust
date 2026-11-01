@@ -123,6 +123,16 @@ pub fn compute_implied_outlives_bounds_inner<'tcx>(
     Ok(outlives_bounds)
 }
 
+/// Which of the region constraints registered since a recorded point should be
+/// collected by [`consider_implied_bounds_hack_for_ty`].
+pub enum ImpliedBoundsRegionConstraints {
+    /// Copy every registered constraint.
+    All,
+    /// Copy only the constraints registered after this count. Callers use this
+    /// when they have already consumed the earlier constraints by taking them.
+    Since(usize),
+}
+
 /// If we're at a callsite which should apply the bevy implied bounds hack and
 /// `-Zno-implied-bounds-compat` has not been set, then use the registered outlives
 /// obligations as implied bounds if we detect `bevy_ecs::*::ParamSet` in the arg.
@@ -131,14 +141,22 @@ pub fn compute_implied_outlives_bounds_inner<'tcx>(
 pub fn consider_implied_bounds_hack_for_ty<'tcx>(
     ocx: &ObligationCtxt<'_, 'tcx>,
     ty: Ty<'tcx>,
-    region_constraints: impl FnOnce() -> Vec<TypeOutlivesConstraint<'tcx>>,
+    which: ImpliedBoundsRegionConstraints,
 ) -> Vec<OutlivesBound<'tcx>> {
     let tcx = ocx.infcx.tcx;
     if !ocx.infcx.tcx.sess.opts.unstable_opts.no_implied_bounds_compat
         && ty.visit_with(&mut ContainsBevyParamSet { tcx }).is_break()
     {
         let mut outlives_bounds = vec![];
-        for TypeOutlivesConstraint { sup_type, sub_region, .. } in region_constraints() {
+        let region_constraints = match which {
+            ImpliedBoundsRegionConstraints::All => {
+                ocx.infcx.clone_registered_region_obligations()
+            }
+            ImpliedBoundsRegionConstraints::Since(prev) => {
+                ocx.infcx.registered_region_obligations_since(prev)
+            }
+        };
+        for TypeOutlivesConstraint { sup_type, sub_region, .. } in region_constraints {
             let mut components = smallvec![];
             push_outlives_components(tcx, sup_type, &mut components);
             outlives_bounds.extend(implied_bounds_from_components(tcx, sub_region, components));
@@ -193,9 +211,11 @@ pub fn query_compute_implied_outlives_bounds<'tcx>(
         compute_implied_outlives_bounds_inner(ocx, param_env, ty, normalized_ty, DUMMY_SP)?;
 
     if !disable_implied_bounds_hack {
-        outlives_bounds.extend(consider_implied_bounds_hack_for_ty(ocx, ty, || {
-            ocx.infcx.clone_registered_region_obligations()
-        }));
+        outlives_bounds.extend(consider_implied_bounds_hack_for_ty(
+            ocx,
+            ty,
+            ImpliedBoundsRegionConstraints::All,
+        ));
     }
 
     Ok(outlives_bounds)

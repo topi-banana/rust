@@ -11,7 +11,8 @@ use rustc_span::DUMMY_SP;
 use rustc_trait_selection::solve::NoSolution;
 use rustc_trait_selection::traits::ObligationCtxt;
 use rustc_trait_selection::traits::implied_outlives_bounds::{
-    compute_implied_outlives_bounds_inner, consider_implied_bounds_hack_for_ty,
+    ImpliedBoundsRegionConstraints, compute_implied_outlives_bounds_inner,
+    consider_implied_bounds_hack_for_ty,
 };
 use smallvec::SmallVec;
 use tracing::instrument;
@@ -73,9 +74,11 @@ pub(super) fn mir_borrowck_implied_outlives_bounds<'tcx>(
             DUMMY_SP,
         )?);
 
-        outlives_bounds.extend(consider_implied_bounds_hack_for_ty(&ocx, normalized_ty, || {
-            infcx.registered_region_obligations_since(num_registered_region_obligations)
-        }));
+        outlives_bounds.extend(consider_implied_bounds_hack_for_ty(
+            &ocx,
+            normalized_ty,
+            ImpliedBoundsRegionConstraints::Since(num_registered_region_obligations),
+        ));
 
         normalized_inputs_and_output.push(normalized_ty);
     }
@@ -114,7 +117,7 @@ pub(super) fn mir_borrowck_implied_outlives_bounds<'tcx>(
             outlives_bounds.extend(consider_implied_bounds_hack_for_ty(
                 &ocx,
                 normalized_ty,
-                || infcx.registered_region_obligations_since(num_registered_region_obligations),
+                ImpliedBoundsRegionConstraints::Since(num_registered_region_obligations),
             ));
         }
     }

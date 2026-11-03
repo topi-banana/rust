@@ -35,7 +35,7 @@ use std::{cmp, iter};
 use rustc_abi::FIRST_VARIANT;
 use rustc_attr_ir::find_attr;
 use rustc_attr_ir::lang_items::LangItem;
-use rustc_data_structures::fx::{FxIndexMap, FxIndexSet};
+use rustc_data_structures::fx::FxIndexMap;
 use rustc_data_structures::unord::{ExtendUnord, UnordSet};
 use rustc_errors::{Applicability, Diag, DiagCtxtHandle, Diagnostic, Level, MultiSpan};
 use rustc_hir::def_id::LocalDefId;
@@ -171,6 +171,18 @@ enum UpvarMigrationInfo {
         // where the variable appears in the closure (but is not captured)
         use_span: Span,
     },
+}
+
+/// The key used to order the notes of one upvar's captures.
+///
+/// Captures that know their rendered name come first, ordered by that name;
+/// the rest keep their relative order. This is the order the migration lint has
+/// always emitted, so it must not change.
+fn migration_sort_key(info: &UpvarMigrationInfo) -> (u8, Option<&str>) {
+    match info {
+        UpvarMigrationInfo::CapturingPrecise { var_name, .. } => (0, Some(var_name.as_str())),
+        UpvarMigrationInfo::CapturingNothing { .. } => (1, None),
+    }
 }
 
 /// Reasons that we might issue a migration warning.
@@ -1446,7 +1458,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         min_captures: Option<&ty::RootVariableMinCaptureList<'tcx>>,
         closure_clause: hir::CaptureBy,
         var_hir_id: HirId,
-    ) -> Option<FxIndexSet<UpvarMigrationInfo>> {
+    ) -> Option<Vec<UpvarMigrationInfo>> {
         let ty = self.deeply_resolve_ignoring_regions(self.node_ty(var_hir_id));
 
         // FIXME(#132279): Using `non_body_analysis` here feels wrong.
@@ -1472,13 +1484,12 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             match closure_clause {
                 // Only migrate if closure is a move closure
                 hir::CaptureBy::Value { .. } => {
-                    let mut diagnostics_info = FxIndexSet::default();
                     let upvars =
                         self.tcx.upvars_mentioned(closure_def_id).expect("must be an upvar");
                     let upvar = upvars[&var_hir_id];
-                    diagnostics_info
-                        .insert(UpvarMigrationInfo::CapturingNothing { use_span: upvar.span });
-                    return Some(diagnostics_info);
+                    return Some(vec![UpvarMigrationInfo::CapturingNothing {
+                        use_span: upvar.span,
+                    }]);
                 }
                 hir::CaptureBy::Ref | hir::CaptureBy::Use { .. } => {}
             }
@@ -1487,25 +1498,23 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         };
         debug!(?root_var_min_capture_list);
 
+        // Only care about captures that are moved into the closure. Hold on to the
+        // captured places rather than their rendered paths: the drop check below
+        // returns early for most upvars, in which case no note is emitted at all.
         let mut projections_list = Vec::new();
-        let mut diagnostics_info = FxIndexSet::default();
+        let mut moved_captures = Vec::new();
 
         for captured_place in root_var_min_capture_list.iter() {
             match captured_place.info.capture_kind {
-                // Only care about captures that are moved into the closure
                 ty::UpvarCapture::ByValue | ty::UpvarCapture::ByUse => {
                     projections_list.push(captured_place.place.projections.as_slice());
-                    diagnostics_info.insert(UpvarMigrationInfo::CapturingPrecise {
-                        source_expr: captured_place.info.path_expr_id,
-                        var_name: captured_place.to_string(self.tcx),
-                    });
+                    moved_captures.push(captured_place);
                 }
                 ty::UpvarCapture::ByRef(..) => {}
             }
         }
 
         debug!(?projections_list);
-        debug!(?diagnostics_info);
 
         let is_moved = !projections_list.is_empty();
         debug!(?is_moved);
@@ -1523,6 +1532,14 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 projections_list,
             )
         {
+            // Render the captured paths only now that we know a note is needed.
+            let diagnostics_info = moved_captures
+                .into_iter()
+                .map(|captured_place| UpvarMigrationInfo::CapturingPrecise {
+                    source_expr: captured_place.info.path_expr_id,
+                    var_name: captured_place.to_string(self.tcx),
+                })
+                .collect();
             return Some(diagnostics_info);
         }
 
@@ -1580,42 +1597,41 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 drop_migration_needed = true;
                 diagnostics_info
             } else {
-                FxIndexSet::default()
+                Vec::new()
             };
 
-            // Combine all the captures responsible for needing migrations into one IndexSet
-            let mut capture_diagnostic = drop_reorder_diagnostic.clone();
-            for key in auto_trait_diagnostic.keys() {
-                capture_diagnostic.insert(key.clone());
-            }
+            // Combine the captures of both passes. Sort by the same key the lint
+            // has always used, so the emitted order is unchanged, and drop the
+            // captures that both passes reported. Everything here borrows the
+            // captures from the two collections, so the rendered paths are not
+            // cloned just to merge and sort them.
+            let mut capture_diagnostic: Vec<&UpvarMigrationInfo> =
+                drop_reorder_diagnostic.iter().chain(auto_trait_diagnostic.keys()).collect();
+            capture_diagnostic.sort_by(|a, b| migration_sort_key(a).cmp(&migration_sort_key(b)));
+            capture_diagnostic.dedup();
 
-            let mut capture_diagnostic = capture_diagnostic.into_iter().collect::<Vec<_>>();
-            capture_diagnostic.sort_by_cached_key(|info| match info {
-                UpvarMigrationInfo::CapturingPrecise { source_expr: _, var_name } => {
-                    (0, Some(var_name.clone()))
-                }
-                UpvarMigrationInfo::CapturingNothing { use_span: _ } => (1, None),
-            });
             for captures_info in capture_diagnostic {
                 // Get the auto trait reasons of why migration is needed because of that capture, if there are any
+                let empty_reasons;
                 let capture_trait_reasons =
-                    if let Some(reasons) = auto_trait_diagnostic.get(&captures_info) {
-                        reasons.clone()
+                    if let Some(reasons) = auto_trait_diagnostic.get(captures_info) {
+                        reasons
                     } else {
-                        UnordSet::default()
+                        empty_reasons = UnordSet::default();
+                        &empty_reasons
                     };
 
                 // Check if migration is needed because of drop reorder as a result of that capture
-                let capture_drop_reorder_reason = drop_reorder_diagnostic.contains(&captures_info);
+                let capture_drop_reorder_reason = drop_reorder_diagnostic.contains(captures_info);
 
                 // Combine all the reasons of why the root variable should be captured as a result of
                 // auto trait implementation issues
                 auto_trait_migration_reasons.extend_unord(capture_trait_reasons.items().copied());
 
                 diagnostics_info.push(MigrationLintNote {
-                    captures_info,
+                    captures_info: captures_info.clone(),
                     reason: self.compute_2229_migrations_reasons(
-                        capture_trait_reasons,
+                        capture_trait_reasons.clone(),
                         capture_drop_reorder_reason,
                     ),
                 });
